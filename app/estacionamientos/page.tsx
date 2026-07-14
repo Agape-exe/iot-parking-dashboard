@@ -4,7 +4,7 @@ import { PageHeader } from "@/app/components/ui";
 export default function ParkingSpacesPage() {
   return (
     <>
-      <PageHeader title="Vista de estacionamientos" description="Diez espacios numerados. La ocupacion se controla por sesiones RFID activas, no por sensores individuales." />
+      <PageHeader title="Vista de estacionamientos" description="Plano visual de los 10 espacios con UID, placa, propietario, tiempo y monto estimado." />
       <SpacesClient />
     </>
   );

@@ -4,7 +4,7 @@ import { PageHeader } from "@/app/components/ui";
 export default function ReportsPage() {
   return (
     <>
-      <PageHeader title="Reportes de eventos" description="Tabla filtrable de ingresos, pagos, salidas, denegaciones, intentos duplicados y aforo lleno." />
+      <PageHeader title="Reportes" description="Filtros por fecha, UID, placa, usuario y evento; reporte por placa, horarios pico y exportacion CSV." />
       <ReportsClient />
     </>
   );

@@ -1,6 +1,8 @@
 export const TOTAL_SPACES = Number(process.env.NEXT_PUBLIC_TOTAL_SPACES ?? 10);
 export const RATE_PER_MINUTE = Number(process.env.NEXT_PUBLIC_RATE_PER_MINUTE ?? 0.1);
 export const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+export const RESERVATION_LIMIT = Math.floor(TOTAL_SPACES * 0.5);
+export const IOT_DEVICE_API_KEY = process.env.IOT_DEVICE_API_KEY;
 
 export function formatMoney(amount: number) {
   return new Intl.NumberFormat("es-PE", {
@@ -23,4 +25,12 @@ export function minutesBetween(start: string, end = new Date()) {
 
 export function calculateAmount(entryTime: string, end = new Date()) {
   return Number((minutesBetween(entryTime, end) * RATE_PER_MINUTE).toFixed(2));
+}
+
+export function combineDateWithCurrentTime(date: string) {
+  const now = new Date();
+  const hour = String(now.getHours()).padStart(2, "0");
+  const minute = String(now.getMinutes()).padStart(2, "0");
+  const second = String(now.getSeconds()).padStart(2, "0");
+  return new Date(`${date}T${hour}:${minute}:${second}`);
 }

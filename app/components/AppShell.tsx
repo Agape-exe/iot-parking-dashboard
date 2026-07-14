@@ -8,7 +8,9 @@ const navItems = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/estacionamientos", label: "Estacionamientos" },
   { href: "/vehiculos", label: "Vehiculos dentro" },
+  { href: "/reservas", label: "Reservas" },
   { href: "/reportes", label: "Reportes" },
+  { href: "/configuracion", label: "Configuracion" },
   { href: "/simulador", label: "Simulador RFID" },
 ];
 
