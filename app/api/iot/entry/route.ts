@@ -1,19 +1,18 @@
+import { requireIotDevice } from "@/lib/auth-server";
+import { iotErrorResponse, readIotRequest } from "@/lib/iot-route";
 import { processEntry } from "@/lib/parking-service";
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    if (!body.uid) {
-      return Response.json({ allowed: false, message: "UID requerido" }, { status: 400 });
-    }
+    const auth = requireIotDevice(request);
+    if (!auth.ok) return auth.response;
 
-    const result = await processEntry(body.uid, body.deviceId ?? null, body.point ?? "entrada");
+    const parsed = await readIotRequest(request);
+    if (!parsed.ok) return parsed.response;
+
+    const result = await processEntry(parsed.data.uid, parsed.data.deviceId, parsed.data.point ?? "entrada");
     return Response.json(result, { status: result.allowed ? 200 : 409 });
   } catch (error) {
-    console.error("[api/iot/entry]", error);
-    return Response.json(
-      { allowed: false, message: error instanceof Error ? error.message : "Error procesando ingreso" },
-      { status: 500 },
-    );
+    return iotErrorResponse("[api/iot/entry]", error);
   }
 }

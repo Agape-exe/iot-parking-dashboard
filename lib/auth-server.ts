@@ -21,3 +21,16 @@ export async function requireAdmin(request: Request) {
 
   return { ok: true as const, user: data.user };
 }
+
+export function requireIotDevice(request: Request) {
+  const expected = process.env.IOT_DEVICE_API_KEY;
+  if (!expected) return { ok: true as const };
+
+  const received = request.headers.get("x-iot-api-key");
+  if (received === expected) return { ok: true as const };
+
+  return {
+    ok: false as const,
+    response: Response.json({ allowed: false, message: "Dispositivo IoT no autorizado" }, { status: 401 }),
+  };
+}
