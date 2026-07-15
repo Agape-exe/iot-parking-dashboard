@@ -17,6 +17,7 @@ export async function POST(request: Request) {
           phone: body.phone ?? null,
           role: "USER",
           status: "ACTIVE",
+          is_demo: false,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "email" },

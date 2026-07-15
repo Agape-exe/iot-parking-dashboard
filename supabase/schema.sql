@@ -12,6 +12,8 @@ create table if not exists public.app_users (
   updated_at timestamptz not null default now()
 );
 
+alter table public.app_users add column if not exists is_demo boolean not null default false;
+
 create table if not exists public.parking_spaces (
   id uuid primary key default gen_random_uuid(),
   number integer not null unique check (number between 1 and 10),
@@ -32,6 +34,38 @@ create table if not exists public.vehicles (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.vehicles add column if not exists is_demo boolean not null default false;
+
+create table if not exists public.rfid_enrollments (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.app_users(id) on delete cascade,
+  vehicle_id uuid not null references public.vehicles(id) on delete cascade,
+  status text not null default 'PENDING',
+  uid text,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  completed_at timestamptz,
+  cancelled_at timestamptz,
+  message text
+);
+
+alter table public.rfid_enrollments drop constraint if exists rfid_enrollments_status_check;
+alter table public.rfid_enrollments add constraint rfid_enrollments_status_check
+  check (status in ('PENDING', 'COMPLETED', 'EXPIRED', 'CANCELLED', 'FAILED'));
+
+-- Los datos demo históricos se reconocían por su correo @example.com. Esta
+-- actualización permite reasignar sus RFID sin convertir usuarios reales.
+update public.app_users
+set is_demo = true
+where lower(email) like '%@example.com' and is_demo = false;
+
+update public.vehicles as vehicle
+set is_demo = true
+from public.app_users as app_user
+where vehicle.user_id = app_user.id
+  and app_user.is_demo = true
+  and vehicle.is_demo = false;
 
 create table if not exists public.reservations (
   id uuid primary key default gen_random_uuid(),
@@ -146,6 +180,12 @@ create index if not exists idx_events_created_at on public.events(created_at);
 create index if not exists idx_events_vehicle_id on public.events(vehicle_id);
 create index if not exists idx_events_user_id on public.events(user_id);
 create index if not exists idx_parking_spaces_status on public.parking_spaces(status);
+create index if not exists idx_rfid_enrollments_status_expires_at on public.rfid_enrollments(status, expires_at);
+create index if not exists idx_rfid_enrollments_user_vehicle on public.rfid_enrollments(user_id, vehicle_id);
+
+create unique index if not exists idx_one_pending_rfid_enrollment
+  on public.rfid_enrollments(user_id, vehicle_id)
+  where status = 'PENDING';
 
 create unique index if not exists idx_one_active_session_per_uid
   on public.parking_sessions(uid)
@@ -270,6 +310,157 @@ begin
 end;
 $$;
 
+create or replace function public.complete_rfid_enrollment(
+  _uid text,
+  _device_id text default null,
+  _point text default 'entrada',
+  _event_time timestamptz default now()
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  normalized_uid text := upper(trim(_uid));
+  enrollment public.rfid_enrollments%rowtype;
+  target_vehicle public.vehicles%rowtype;
+  target_user public.app_users%rowtype;
+  current_vehicle public.vehicles%rowtype;
+  current_owner_is_demo boolean := false;
+  assignment_message text;
+  event_description text;
+begin
+  if normalized_uid = '' then
+    return jsonb_build_object(
+      'mode', 'RFID_ENROLLMENT',
+      'handled', true,
+      'ok', false,
+      'message', 'UID requerido'
+    );
+  end if;
+
+  -- Serializa las lecturas para que un mismo escaneo no complete dos solicitudes.
+  perform pg_advisory_xact_lock(10002);
+
+  update public.rfid_enrollments
+  set status = 'EXPIRED', message = 'El tiempo para registrar la RFID venció.'
+  where status = 'PENDING' and expires_at <= _event_time;
+
+  select *
+  into enrollment
+  from public.rfid_enrollments
+  where status = 'PENDING' and expires_at > _event_time
+  order by created_at asc
+  for update skip locked
+  limit 1;
+
+  if enrollment.id is null then
+    return jsonb_build_object(
+      'mode', 'NORMAL_ENTRY',
+      'handled', false,
+      'message', 'No hay registro RFID pendiente'
+    );
+  end if;
+
+  select * into target_vehicle
+  from public.vehicles
+  where id = enrollment.vehicle_id and user_id = enrollment.user_id
+  for update;
+
+  select * into target_user
+  from public.app_users
+  where id = enrollment.user_id;
+
+  if target_vehicle.id is null or target_user.id is null then
+    update public.rfid_enrollments
+    set status = 'FAILED', uid = normalized_uid, message = 'El usuario o vehículo ya no existe.'
+    where id = enrollment.id;
+
+    return jsonb_build_object(
+      'mode', 'RFID_ENROLLMENT',
+      'handled', true,
+      'ok', false,
+      'message', 'El usuario o vehículo ya no existe.'
+    );
+  end if;
+
+  select * into current_vehicle
+  from public.vehicles
+  where upper(uid) = normalized_uid
+  for update
+  limit 1;
+
+  if current_vehicle.id = target_vehicle.id then
+    assignment_message := 'Esta RFID ya estaba vinculada a tu vehículo.';
+    event_description := 'RFID vinculada al usuario desde app móvil.';
+  elsif current_vehicle.id is not null then
+    select (vehicle_user.is_demo or current_vehicle.is_demo)
+    into current_owner_is_demo
+    from public.app_users as vehicle_user
+    where vehicle_user.id = current_vehicle.user_id;
+
+    if not coalesce(current_owner_is_demo, false) then
+      update public.rfid_enrollments
+      set status = 'FAILED', uid = normalized_uid,
+          message = 'Esta tarjeta RFID ya está asociada a otro usuario.'
+      where id = enrollment.id;
+
+      return jsonb_build_object(
+        'mode', 'RFID_ENROLLMENT',
+        'handled', true,
+        'ok', false,
+        'message', 'Esta tarjeta RFID ya está asociada a otro usuario.'
+      );
+    end if;
+
+    update public.vehicles
+    set uid = null, status = 'AVAILABLE', updated_at = _event_time
+    where id = current_vehicle.id;
+
+    assignment_message := 'RFID registrada correctamente';
+    event_description := 'RFID reasignada desde vehículo demo a usuario móvil.';
+  else
+    assignment_message := 'RFID registrada correctamente';
+    event_description := 'RFID vinculada al usuario desde app móvil.';
+  end if;
+
+  update public.vehicles
+  set uid = normalized_uid, status = 'ASSIGNED', is_demo = false, updated_at = _event_time
+  where id = target_vehicle.id;
+
+  update public.rfid_enrollments
+  set status = 'COMPLETED', uid = normalized_uid, completed_at = _event_time,
+      message = assignment_message
+  where id = enrollment.id;
+
+  insert into public.events (
+    uid, event_type, description, point, device_id, user_id, vehicle_id,
+    plate, owner_name, created_at
+  )
+  values (
+    normalized_uid, 'UID_ASIGNADO', event_description,
+    coalesce(nullif(trim(_point), ''), 'entrada'), _device_id,
+    target_user.id, target_vehicle.id, target_vehicle.plate,
+    target_user.full_name, _event_time
+  );
+
+  return jsonb_build_object(
+    'mode', 'RFID_ENROLLMENT',
+    'handled', true,
+    'ok', true,
+    'message', assignment_message,
+    'uid', normalized_uid,
+    'plate', target_vehicle.plate,
+    'ownerName', target_user.full_name,
+    'enrollmentId', enrollment.id
+  );
+end;
+$$;
+
+revoke all on function public.complete_rfid_enrollment(text, text, text, timestamptz) from public;
+grant execute on function public.complete_rfid_enrollment(text, text, text, timestamptz) to service_role;
+
 alter table public.app_users enable row level security;
 alter table public.vehicles enable row level security;
 alter table public.reservations enable row level security;
@@ -277,6 +468,7 @@ alter table public.parking_spaces enable row level security;
 alter table public.parking_sessions enable row level security;
 alter table public.events enable row level security;
 alter table public.system_settings enable row level security;
+alter table public.rfid_enrollments enable row level security;
 
 do $$
 begin
@@ -300,6 +492,9 @@ begin
   end if;
   if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'system_settings' and policyname = 'Authenticated users can read system settings') then
     create policy "Authenticated users can read system settings" on public.system_settings for select to authenticated using (true);
+  end if;
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'rfid_enrollments' and policyname = 'Authenticated users can read rfid enrollments') then
+    create policy "Authenticated users can read rfid enrollments" on public.rfid_enrollments for select to authenticated using (true);
   end if;
 end;
 $$;
