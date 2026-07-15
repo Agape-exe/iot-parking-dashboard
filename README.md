@@ -12,12 +12,14 @@ Configura estas variables en `.env.local` y tambien en Vercel:
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
+RFID_ENROLLMENT_TEST_MODE=true
 NEXT_PUBLIC_TOTAL_SPACES=10
 NEXT_PUBLIC_RATE_PER_MINUTE=0.10
 NEXT_PUBLIC_DEMO_MODE=true
 ```
 
 La `SUPABASE_SERVICE_ROLE_KEY` se usa solo en rutas del servidor. No debe exponerse en componentes cliente.
+`RFID_ENROLLMENT_TEST_MODE=true` habilita temporalmente la simulación manual desde la app móvil. Desactívala o elimínala cuando el ESP32 esté actualizado.
 
 `NEXT_PUBLIC_DEMO_MODE=true` permite probar el panel localmente sin bloquear las rutas `/api/admin/*` por 401. Para usar autenticacion real, cambia a `NEXT_PUBLIC_DEMO_MODE=false`, crea un usuario en Supabase Auth e inicia sesion desde `/login`.
 
@@ -27,10 +29,10 @@ La `SUPABASE_SERVICE_ROLE_KEY` se usa solo en rutas del servidor. No debe expone
 2. En SQL Editor, copia y ejecuta todo el contenido de `supabase/schema.sql`.
 3. En Authentication, crea un usuario administrador con email y contrasena.
 4. Copia la URL del proyecto, anon key y service role key hacia `.env.local`.
-5. Confirma que existan exactamente estas tablas: `parking_spaces`, `parking_sessions` y `events`.
+5. Confirma que existan las tablas del sistema, incluida `rfid_enrollments`, y las columnas `is_demo` en `app_users` y `vehicles`.
 6. Confirma que `parking_spaces` tenga 10 registros en la columna `number`, del 1 al 10.
 
-El script actual reinicia estas tres tablas con `drop table if exists ... cascade`. Es lo mas directo para corregir esquemas anteriores incompatibles, como columnas `space_number` en `parking_spaces` o tablas faltantes.
+El script es idempotente: puede ejecutarse de nuevo para agregar tablas, columnas, índices, restricciones y funciones faltantes sin eliminar los datos existentes.
 
 ## Ejecutar localmente
 
@@ -65,6 +67,10 @@ Abre `http://localhost:3000`. Si `NEXT_PUBLIC_DEMO_MODE=true`, entraras al dashb
 - `POST /api/iot/entry`: ingreso temporal IoT.
 - `POST /api/iot/payment-request`: calculo de pago sin confirmar.
 - `POST /api/iot/exit`: salida autorizada solo con pago confirmado.
+- `POST /api/mobile/rfid-enrollments/start`: inicia una vinculación RFID de 60 segundos.
+- `GET /api/mobile/rfid-enrollments/:id`: consulta y actualiza el estado de la vinculación.
+- `PATCH /api/mobile/rfid-enrollments/:id/cancel`: cancela una vinculación pendiente.
+- `POST /api/iot/rfid-enrollment/scan`: procesa la lectura de vinculación sin abrir la barrera.
 
 ## Errores corregidos
 

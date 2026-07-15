@@ -208,6 +208,7 @@ export async function insertDemoData(count = 20, useAi = true) {
         phone: row.phone,
         role: "USER",
         status: "ACTIVE",
+        is_demo: true,
       })
       .select("*")
       .single<AppUser>();
@@ -225,6 +226,7 @@ export async function insertDemoData(count = 20, useAi = true) {
       model: row.model,
       color: row.color,
       status: "AVAILABLE",
+      is_demo: true,
     });
 
     if (vehicleError) {
@@ -248,6 +250,7 @@ async function createOneLocalVehicleForUid(uid: string): Promise<VehicleAssignme
       phone: row.phone,
       role: "USER",
       status: "ACTIVE",
+      is_demo: true,
     })
     .select("*")
     .single<AppUser>();
@@ -264,6 +267,7 @@ async function createOneLocalVehicleForUid(uid: string): Promise<VehicleAssignme
       color: row.color,
       uid,
       status: "ASSIGNED",
+      is_demo: true,
     })
     .select("*")
     .single<Vehicle>();

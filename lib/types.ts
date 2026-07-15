@@ -3,6 +3,7 @@ export type SessionStatus = "INSIDE" | "PAID" | "EXITED";
 export type ReservationStatus = "ACTIVE" | "USED" | "CANCELLED" | "EXPIRED";
 export type UserStatus = "ACTIVE" | "INACTIVE";
 export type VehicleStatus = "AVAILABLE" | "ASSIGNED" | "INACTIVE";
+export type RfidEnrollmentStatus = "PENDING" | "COMPLETED" | "EXPIRED" | "CANCELLED" | "FAILED";
 
 export type EventType =
   | "INGRESO"
@@ -27,6 +28,7 @@ export type AppUser = {
   phone: string | null;
   role: string;
   status: UserStatus;
+  is_demo: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -40,9 +42,23 @@ export type Vehicle = {
   color: string;
   uid: string | null;
   status: VehicleStatus;
+  is_demo: boolean;
   created_at: string;
   updated_at: string;
   app_users?: AppUser | null;
+};
+
+export type RfidEnrollment = {
+  id: string;
+  user_id: string;
+  vehicle_id: string;
+  status: RfidEnrollmentStatus;
+  uid: string | null;
+  expires_at: string;
+  created_at: string;
+  completed_at: string | null;
+  cancelled_at: string | null;
+  message: string | null;
 };
 
 export type Reservation = {

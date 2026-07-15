@@ -17,6 +17,7 @@ export async function POST(request: Request) {
         color: body.color ?? "Sin especificar",
         uid: body.uid ? String(body.uid).trim().toUpperCase() : null,
         status: body.uid ? "ASSIGNED" : "AVAILABLE",
+        is_demo: false,
       })
       .select("*")
       .single<Vehicle>();
