@@ -12,14 +12,14 @@ export async function readIotRequest(request: Request): Promise<{ ok: true; data
     console.error("[iot:invalid-json]", error);
     return {
       ok: false,
-      response: Response.json({ allowed: false, message: "El cuerpo de la solicitud no contiene JSON valido." }, { status: 400 }),
+      response: Response.json({ allowed: false, ok: false, paid: false, message: "El cuerpo de la solicitud no contiene JSON valido." }, { status: 400 }),
     };
   }
 
   if (!body || typeof body !== "object") {
     return {
       ok: false,
-      response: Response.json({ allowed: false, message: "La solicitud no contiene datos validos." }, { status: 400 }),
+      response: Response.json({ allowed: false, ok: false, paid: false, message: "La solicitud no contiene datos validos." }, { status: 400 }),
     };
   }
 
@@ -28,7 +28,7 @@ export async function readIotRequest(request: Request): Promise<{ ok: true; data
   if (!uid) {
     return {
       ok: false,
-      response: Response.json({ allowed: false, message: "UID requerido" }, { status: 400 }),
+      response: Response.json({ allowed: false, ok: false, paid: false, message: "UID requerido" }, { status: 400 }),
     };
   }
 
@@ -44,8 +44,10 @@ export async function readIotRequest(request: Request): Promise<{ ok: true; data
 
 export function iotErrorResponse(context: string, error: unknown) {
   console.error(context, error);
-  const payload: { allowed: false; message: string; debug?: string } = {
+  const payload: { allowed: false; ok: false; paid: false; message: string; debug?: string } = {
     allowed: false,
+    ok: false,
+    paid: false,
     message: "No se pudo procesar la solicitud. Revise la configuracion de base de datos.",
   };
 

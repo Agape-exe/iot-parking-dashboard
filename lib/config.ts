@@ -1,4 +1,4 @@
-export const TOTAL_SPACES = Number(process.env.NEXT_PUBLIC_TOTAL_SPACES ?? 10);
+export const TOTAL_SPACES = Number(process.env.NEXT_PUBLIC_TOTAL_SPACES ?? 9);
 export const RATE_PER_MINUTE = Number(process.env.NEXT_PUBLIC_RATE_PER_MINUTE ?? 0.1);
 export const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
 export const RESERVATION_LIMIT = Math.floor(TOTAL_SPACES * 0.5);
@@ -16,7 +16,20 @@ export function formatDateTime(value: string | null) {
   return new Intl.DateTimeFormat("es-PE", {
     dateStyle: "short",
     timeStyle: "short",
+    timeZone: "America/Lima",
   }).format(new Date(value));
+}
+
+export function hourInLima(value: string) {
+  const part = new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    hourCycle: "h23",
+    timeZone: "America/Lima",
+  })
+    .formatToParts(new Date(value))
+    .find((item) => item.type === "hour")?.value;
+
+  return Number(part ?? 0);
 }
 
 export function minutesBetween(start: string, end = new Date()) {

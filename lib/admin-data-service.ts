@@ -1,6 +1,7 @@
 import { calculateReservationAvailability, getReservationBlockMessage } from "@/lib/reservation-availability";
 import { getOperationalNow } from "@/lib/settings-service";
 import { supabaseAdmin } from "@/lib/supabase-server";
+import { hourInLima, TOTAL_SPACES } from "@/lib/config";
 import type { AppUser, ParkingEvent, ParkingSession, Reservation, Vehicle } from "@/lib/types";
 import { expireReservations, getActiveSessions, registerEvent } from "./parking-service";
 
@@ -119,7 +120,7 @@ export async function countActiveReservations(now = new Date()) {
 
 export async function getReservationAvailability(now = new Date()) {
   const [activeSessions, activeReservations] = await Promise.all([getActiveSessions(), countActiveReservations(now)]);
-  return calculateReservationAvailability(activeSessions.length, activeReservations);
+  return calculateReservationAvailability(activeSessions.filter((session) => session.space_number <= TOTAL_SPACES).length, activeReservations);
 }
 
 export async function createReservation(input: { userId: string; vehicleId: string; durationMinutes?: number; startTime?: string }) {
@@ -156,7 +157,10 @@ export async function createReservation(input: { userId: string; vehicleId: stri
     return { ok: false as const, message: "El vehículo ya tiene una reserva activa" };
   }
 
-  const availability = calculateReservationAvailability(activeSessions.length, await countActiveReservations(now));
+  const availability = calculateReservationAvailability(
+    activeSessions.filter((session) => session.space_number <= TOTAL_SPACES).length,
+    await countActiveReservations(now),
+  );
   const blockMessage = getReservationBlockMessage(availability);
   if (blockMessage) {
     return { ok: false as const, message: blockMessage, availability };
@@ -229,30 +233,29 @@ export async function listReportRows(filters: {
   plate?: string | null;
   user?: string | null;
   eventType?: string | null;
-  from?: string | null;
-  to?: string | null;
+  start: string;
+  endExclusive: string;
 }) {
   let query = db().from("events").select("*").order("created_at", { ascending: false }).limit(500);
   if (filters.uid) query = query.eq("uid", filters.uid.trim().toUpperCase());
   if (filters.plate) query = query.ilike("plate", `%${filters.plate.trim()}%`);
+  if (filters.user) query = query.ilike("owner_name", `%${filters.user.trim()}%`);
   if (filters.eventType) query = query.eq("event_type", filters.eventType);
-  if (filters.from) query = query.gte("created_at", new Date(filters.from).toISOString());
-  if (filters.to) query = query.lte("created_at", new Date(`${filters.to}T23:59:59`).toISOString());
+  query = query.gte("created_at", filters.start).lt("created_at", filters.endExclusive);
 
   const { data, error } = await query.returns<ParkingEvent[]>();
   if (error) throw error;
-  const rows = data ?? [];
-  const user = filters.user?.trim().toLowerCase();
-  if (!user) return rows;
-  return rows.filter((event) => event.owner_name?.toLowerCase().includes(user));
+  return data ?? [];
 }
 
-export async function getPlateReport(plate: string) {
+export async function getPlateReport(plate: string, range: { start: string; endExclusive: string }) {
   const normalized = plate.trim().toUpperCase();
   const { data: sessions, error: sessionError } = await db()
     .from("parking_sessions")
     .select("*")
     .eq("plate", normalized)
+    .gte("entry_time", range.start)
+    .lt("entry_time", range.endExclusive)
     .order("entry_time", { ascending: false })
     .limit(100)
     .returns<ParkingSession[]>();
@@ -262,6 +265,8 @@ export async function getPlateReport(plate: string) {
     .from("events")
     .select("*")
     .eq("plate", normalized)
+    .gte("created_at", range.start)
+    .lt("created_at", range.endExclusive)
     .order("created_at", { ascending: false })
     .limit(200)
     .returns<ParkingEvent[]>();
@@ -277,7 +282,7 @@ export function groupPeakHours(events: ParkingEvent[]) {
     count: 0,
   }));
   events.forEach((event) => {
-    if (event.event_type === "INGRESO") rows[new Date(event.created_at).getHours()].count += 1;
+    if (event.event_type === "INGRESO") rows[hourInLima(event.created_at)].count += 1;
   });
   const peak = rows.reduce((best, row) => (row.count > best.count ? row : best), rows[0]);
   return { rows, peak };

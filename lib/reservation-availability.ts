@@ -11,12 +11,13 @@ export type ReservationAvailability = {
 };
 
 export function calculateReservationAvailability(occupiedSpaces: number, activeReservations: number): ReservationAvailability {
-  const freeSpaces = Math.max(0, TOTAL_SPACES - occupiedSpaces);
-  const availableCapacity = TOTAL_SPACES - occupiedSpaces - activeReservations;
+  const normalizedOccupiedSpaces = Math.min(TOTAL_SPACES, Math.max(0, occupiedSpaces));
+  const freeSpaces = Math.max(0, TOTAL_SPACES - normalizedOccupiedSpaces);
+  const availableCapacity = Math.max(0, TOTAL_SPACES - normalizedOccupiedSpaces - activeReservations);
 
   return {
     totalSpaces: TOTAL_SPACES,
-    occupiedSpaces,
+    occupiedSpaces: normalizedOccupiedSpaces,
     freeSpaces,
     activeReservations,
     reservationLimit: RESERVATION_LIMIT,
