@@ -1,9 +1,10 @@
-import { calculateAmount, TOTAL_SPACES } from "@/lib/config";
+import { calculateAmount, hourInLima, TOTAL_SPACES } from "@/lib/config";
 import { getOrAssignVehicleByUid } from "@/lib/demo-data-service";
+import { dateKeyInLima, resolveReportRange } from "@/lib/report-period";
 import { calculateReservationAvailability } from "@/lib/reservation-availability";
 import { getOperationalNow, getSettings } from "@/lib/settings-service";
 import { supabaseAdmin } from "@/lib/supabase-server";
-import type { EventType, ParkingEvent, ParkingSession, ParkingSpace, Reservation } from "@/lib/types";
+import type { AppUser, EventType, ParkingEvent, ParkingSession, ParkingSpace, Reservation, Vehicle } from "@/lib/types";
 
 type EventInput = {
   uid: string;
@@ -132,7 +133,12 @@ async function getEntryIdentity(uid: string): Promise<EntryIdentity> {
 }
 
 export async function getSpaces() {
-  const { data, error } = await supabaseAdmin().from("parking_spaces").select("*").order("number", { ascending: true }).returns<ParkingSpace[]>();
+  const { data, error } = await supabaseAdmin()
+    .from("parking_spaces")
+    .select("*")
+    .lte("number", TOTAL_SPACES)
+    .order("number", { ascending: true })
+    .returns<ParkingSpace[]>();
 
   if (error) {
     logSupabaseError("getSpaces", error);
@@ -141,7 +147,7 @@ export async function getSpaces() {
   }
 
   const spaces = data ?? [];
-  if (spaces.length >= TOTAL_SPACES) return spaces;
+  if (spaces.length >= TOTAL_SPACES) return spaces.slice(0, TOTAL_SPACES);
 
   const byNumber = new Map(spaces.map((space) => [space.number, space]));
   return defaultSpaces().map((fallback) => byNumber.get(fallback.number) ?? fallback);
@@ -256,10 +262,11 @@ async function fallbackProcessEntry(uid: string, deviceId: string | null, point:
 
   const spaces = await getSpaces();
   const activeSessions = await getActiveSessions();
+  const operationalActiveSessions = activeSessions.filter((session) => session.space_number <= TOTAL_SPACES);
   const occupiedNumbers = new Set(activeSessions.map((session) => session.space_number));
   const freeSpace = spaces.find((space) => space.status === "FREE" && !occupiedNumbers.has(space.number));
 
-  if (!freeSpace || activeSessions.length >= TOTAL_SPACES) {
+  if (!freeSpace || operationalActiveSessions.length >= TOTAL_SPACES) {
     await registerEvent({
       uid,
       eventType: "ESTACIONAMIENTO_LLENO",
@@ -492,10 +499,15 @@ export async function confirmPayment(sessionId: string) {
     throw error;
   }
 
+  return applyPayment(session, "dashboard", "WEB_ADMIN");
+}
+
+async function applyPayment(session: ParkingSession, point: string, deviceId: string | null) {
   if (session.paid) {
-    return { message: "El pago ya estaba confirmado", session };
+    return { message: point === "pago" ? "Pago ya confirmado" : "El pago ya estaba confirmado", session };
   }
 
+  const db = supabaseAdmin();
   const paymentTime = await getOperationalNow();
   const amount = calculateAmount(session.entry_time, paymentTime);
   const { data: updated, error: updateError } = await db
@@ -508,12 +520,23 @@ export async function confirmPayment(sessionId: string) {
       updated_at: paymentTime.toISOString(),
     })
     .eq("id", session.id)
+    .eq("paid", false)
+    .in("status", ["INSIDE", "PAID"])
+    .is("exit_time", null)
     .select("*")
-    .single<ParkingSession>();
+    .maybeSingle<ParkingSession>();
 
   if (updateError) {
     logSupabaseError("confirmPayment:updateSession", updateError);
     throw updateError;
+  }
+
+  if (!updated) {
+    const refreshed = await getActiveSession(session.uid);
+    if (refreshed?.paid) {
+      return { message: point === "pago" ? "Pago ya confirmado" : "El pago ya estaba confirmado", session: refreshed };
+    }
+    throw new Error("La sesion ya no esta disponible para confirmar el pago.");
   }
 
   const { error: spaceError } = await db.from("parking_spaces").update({ status: "PAID", updated_at: paymentTime.toISOString() }).eq("number", session.space_number);
@@ -525,9 +548,9 @@ export async function confirmPayment(sessionId: string) {
   await registerEvent({
     uid: session.uid,
     eventType: "PAGO",
-    description: `Pago confirmado por S/ ${amount.toFixed(2)}.`,
-    point: "dashboard",
-    deviceId: "WEB_ADMIN",
+    description: point === "pago" ? `Pago confirmado desde caseta RFID por S/ ${amount.toFixed(2)}.` : `Pago confirmado por S/ ${amount.toFixed(2)}.`,
+    point,
+    deviceId,
     userId: session.user_id,
     vehicleId: session.vehicle_id,
     reservationId: session.reservation_id,
@@ -537,6 +560,59 @@ export async function confirmPayment(sessionId: string) {
   });
 
   return { message: "Pago confirmado", session: updated };
+}
+
+export async function confirmPaymentByUid(rawUid: string, deviceId: string | null, point: string) {
+  const uid = normalizeUid(rawUid);
+  const db = supabaseAdmin();
+  const { data: vehicle, error: vehicleError } = await db
+    .from("vehicles")
+    .select("*, app_users(*)")
+    .ilike("uid", uid)
+    .maybeSingle<Vehicle & { app_users: AppUser | null }>();
+
+  if (vehicleError) {
+    logSupabaseError("confirmPaymentByUid:getVehicle", vehicleError);
+    throw vehicleError;
+  }
+
+  if (!vehicle) {
+    return { allowed: false, ok: false, paid: false, message: "UID no asociado a un vehiculo" };
+  }
+
+  const active = await getActiveSession(uid);
+  if (!active) {
+    const { data: latest, error: latestError } = await db
+      .from("parking_sessions")
+      .select("*")
+      .eq("uid", uid)
+      .order("entry_time", { ascending: false })
+      .limit(1)
+      .maybeSingle<ParkingSession>();
+    if (latestError) throw latestError;
+    return {
+      allowed: false,
+      ok: false,
+      paid: false,
+      message: latest?.status === "EXITED" || latest?.exit_time ? "La sesion ya fue finalizada" : "El vehiculo no tiene una sesion activa dentro",
+      plate: vehicle.plate,
+      ownerName: vehicle.app_users?.full_name ?? null,
+    };
+  }
+
+  const result = await applyPayment(active, point || "pago", deviceId);
+  const paidSession = result.session;
+  const amount = paidSession.amount ?? calculateAmount(paidSession.entry_time, paidSession.payment_time ? new Date(paidSession.payment_time) : await getOperationalNow());
+  return {
+    allowed: true,
+    ok: true,
+    paid: true,
+    message: result.message,
+    amount,
+    plate: paidSession.plate ?? vehicle.plate,
+    ownerName: paidSession.owner_name ?? vehicle.app_users?.full_name ?? null,
+    uid,
+  };
 }
 
 export async function processExit(rawUid: string, deviceId: string | null, point: string) {
@@ -626,16 +702,13 @@ export async function processExit(rawUid: string, deviceId: string | null, point
 
 export async function getEventsToday() {
   const now = await getOperationalNow();
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(now);
-  end.setHours(23, 59, 59, 999);
+  const range = resolveReportRange({ period: "day" }, dateKeyInLima(now));
 
   const { data, error } = await supabaseAdmin()
     .from("events")
     .select("*")
-    .gte("created_at", start.toISOString())
-    .lte("created_at", end.toISOString())
+    .gte("created_at", range.start)
+    .lt("created_at", range.endExclusive)
     .returns<ParkingEvent[]>();
 
   if (error) {
@@ -676,7 +749,8 @@ export async function getOverview() {
     countRows("reservations", "activeReservations", now),
   ]);
 
-  const availability = calculateReservationAvailability(activeSessions.length, activeReservations);
+  const operationalSessions = activeSessions.filter((session) => session.space_number <= TOTAL_SPACES);
+  const availability = calculateReservationAvailability(operationalSessions.length, activeReservations);
   const occupiedSpaces = availability.occupiedSpaces;
   const paidAwaitingExit = activeSessions.filter((session) => session.status === "PAID" || session.paid).length;
   const eventCounts = events.reduce<Record<string, number>>((acc, event) => {
@@ -685,7 +759,7 @@ export async function getOverview() {
   }, {});
   const entriesByHour = Array.from({ length: 24 }, (_, hour) => ({
     hour,
-    count: events.filter((event) => event.event_type === "INGRESO" && new Date(event.created_at).getHours() === hour).length,
+    count: events.filter((event) => event.event_type === "INGRESO" && hourInLima(event.created_at) === hour).length,
   }));
 
   return {

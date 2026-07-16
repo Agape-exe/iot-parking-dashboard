@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Badge, Card, EmptyState } from "@/app/components/ui";
-import { calculateAmount, formatDateTime, formatMoney, minutesBetween } from "@/lib/config";
+import { calculateAmount, formatDateTime, formatMoney, hourInLima, minutesBetween, TOTAL_SPACES } from "@/lib/config";
 import { formatStatus } from "@/lib/status";
 import type { AppUser, EventType, ParkingEvent, ParkingSession, ParkingSpace, Reservation, SystemSettings, Vehicle } from "@/lib/types";
 import { useAuth } from "./AuthGate";
@@ -44,7 +44,17 @@ type DemoDataStats = {
   protectedAssociations: number;
 };
 
-const emptySpaces: ParkingSpace[] = Array.from({ length: 10 }, (_, index) => ({
+type ReportRange = {
+  period: "day" | "week" | "month" | "custom";
+  selectedDate: string;
+  startDate: string;
+  endDateInclusive: string;
+  start: string;
+  endExclusive: string;
+  timeZone: string;
+};
+
+const emptySpaces: ParkingSpace[] = Array.from({ length: TOTAL_SPACES }, (_, index) => ({
   id: `empty-${index + 1}`,
   number: index + 1,
   status: "FREE",
@@ -53,14 +63,14 @@ const emptySpaces: ParkingSpace[] = Array.from({ length: 10 }, (_, index) => ({
 }));
 
 const emptyOverview: Overview = {
-  totalSpaces: 10,
+  totalSpaces: TOTAL_SPACES,
   occupiedSpaces: 0,
-  freeSpaces: 10,
+  freeSpaces: TOTAL_SPACES,
   vehiclesInside: 0,
   paidAwaitingExit: 0,
   activeReservations: 0,
-  reservationLimit: 5,
-  availableCapacity: 10,
+  reservationLimit: Math.floor(TOTAL_SPACES * 0.5),
+  availableCapacity: TOTAL_SPACES,
   reservationAvailable: true,
   usersCount: 0,
   vehiclesCount: 0,
@@ -740,30 +750,41 @@ export function ReportsClient() {
   const [plate, setPlate] = useState("");
   const [user, setUser] = useState("");
   const [eventType, setEventType] = useState("");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  const [period, setPeriod] = useState<ReportRange["period"]>("day");
+  const [selectedDate, setSelectedDate] = useState("");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [range, setRange] = useState<ReportRange | null>(null);
+  const [message, setMessage] = useState("");
   const [plateReport, setPlateReport] = useState<{ sessions: ParkingSession[]; events: ParkingEvent[] }>({ sessions: [], events: [] });
+  const [plateReportQuery, setPlateReportQuery] = useState("");
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
+    params.set("period", period);
     if (uid) params.set("uid", uid);
     if (plate) params.set("plate", plate);
     if (user) params.set("user", user);
     if (eventType) params.set("eventType", eventType);
-    if (from) params.set("from", from);
-    if (to) params.set("to", to);
+    if (selectedDate) params.set("date", selectedDate);
+    if (period === "custom" && customFrom) params.set("from", customFrom);
+    if (period === "custom" && customTo) params.set("to", customTo);
     return params.toString();
-  }, [eventType, from, plate, to, uid, user]);
+  }, [customFrom, customTo, eventType, period, plate, selectedDate, uid, user]);
 
   const load = useCallback(async () => {
     try {
-      const payload = await adminFetch<{ events: ParkingEvent[] }>(`/api/admin/events${query ? `?${query}` : ""}`);
+      const payload = await adminFetch<{ events: ParkingEvent[]; range: ReportRange }>(`/api/admin/events?${query}`);
       setEvents(payload.events ?? []);
+      setRange(payload.range);
+      setMessage("");
+      if (!selectedDate) setSelectedDate(payload.range.selectedDate);
     } catch (error) {
       console.error(error);
       setEvents([]);
+      setMessage(error instanceof Error ? error.message : "No se pudo generar el reporte.");
     }
-  }, [adminFetch, query]);
+  }, [adminFetch, query, selectedDate]);
 
   useEffect(() => {
     queueMicrotask(() => void load());
@@ -771,8 +792,18 @@ export function ReportsClient() {
 
   async function searchPlateReport() {
     if (!plate) return;
-    const payload = await adminFetch<{ sessions: ParkingSession[]; events: ParkingEvent[] }>(`/api/admin/reports/plate?plate=${encodeURIComponent(plate)}`);
-    setPlateReport(payload);
+    try {
+      const payload = await adminFetch<{ sessions: ParkingSession[]; events: ParkingEvent[] }>(
+        `/api/admin/reports/plate?plate=${encodeURIComponent(plate)}&${query}`,
+      );
+      setPlateReport(payload);
+      setPlateReportQuery(query);
+      setMessage("");
+    } catch (error) {
+      setPlateReport({ sessions: [], events: [] });
+      setPlateReportQuery("");
+      setMessage(error instanceof Error ? error.message : "No se pudo generar el reporte por placa.");
+    }
   }
 
   function exportCsv() {
@@ -787,7 +818,7 @@ export function ReportsClient() {
       event.point,
     ]);
     const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n");
-    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const url = URL.createObjectURL(new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" }));
     const link = document.createElement("a");
     link.href = url;
     link.download = "reporte-estacionamiento.csv";
@@ -798,46 +829,117 @@ export function ReportsClient() {
   const peakRows = Array.from({ length: 24 }, (_, hour) => ({
     hour,
     label: `${String(hour).padStart(2, "0")}:00 - ${String(hour + 1).padStart(2, "0")}:00`,
-    count: events.filter((event) => event.event_type === "INGRESO" && new Date(event.created_at).getHours() === hour).length,
+    count: events.filter((event) => event.event_type === "INGRESO" && hourInLima(event.created_at) === hour).length,
   }));
   const maxPeak = Math.max(1, ...peakRows.map((row) => row.count));
   const peak = peakRows.reduce((best, row) => (row.count > best.count ? row : best), peakRows[0]);
+  const summaryCards = [
+    ["Total de eventos", events.length],
+    ["Total de ingresos", events.filter((event) => event.event_type === "INGRESO").length],
+    ["Total de pagos", events.filter((event) => event.event_type === "PAGO").length],
+    ["Total de salidas", events.filter((event) => event.event_type === "SALIDA").length],
+    ["Horario pico", peak.count ? peak.label : "Sin ingresos"],
+  ];
+  const visiblePlateReport = plateReportQuery === query ? plateReport : { sessions: [], events: [] };
+
+  function changePeriod(nextPeriod: ReportRange["period"]) {
+    setPeriod(nextPeriod);
+    setPlateReport({ sessions: [], events: [] });
+    if (nextPeriod === "custom") {
+      const fallback = selectedDate || range?.selectedDate || "";
+      if (!customFrom) setCustomFrom(fallback);
+      if (!customTo) setCustomTo(fallback);
+    }
+  }
 
   return (
     <div className="space-y-4">
       <Card>
-        <div className="grid gap-3 md:grid-cols-4 xl:grid-cols-7">
-          <input value={uid} onChange={(event) => setUid(event.target.value.toUpperCase())} placeholder="UID" className="rounded-md border border-slate-300 px-3 py-2 text-sm" />
-          <input value={plate} onChange={(event) => setPlate(event.target.value.toUpperCase())} placeholder="Placa" className="rounded-md border border-slate-300 px-3 py-2 text-sm" />
-          <input value={user} onChange={(event) => setUser(event.target.value)} placeholder="Usuario" className="rounded-md border border-slate-300 px-3 py-2 text-sm" />
-          <select value={eventType} onChange={(event) => setEventType(event.target.value)} className="rounded-md border border-slate-300 px-3 py-2 text-sm">
-            <option value="">Todos</option>
-            {eventTypes.map((type) => (
-              <option key={type} value={type}>
-                {formatStatus(type, "event")}
-              </option>
-            ))}
-          </select>
-          <input type="date" value={from} onChange={(event) => setFrom(event.target.value)} className="rounded-md border border-slate-300 px-3 py-2 text-sm" />
-          <input type="date" value={to} onChange={(event) => setTo(event.target.value)} className="rounded-md border border-slate-300 px-3 py-2 text-sm" />
-          <button onClick={exportCsv} className="rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <label className="text-xs font-medium text-slate-600">
+            Periodo
+            <select value={period} onChange={(event) => changePeriod(event.target.value as ReportRange["period"])} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm">
+              <option value="day">Dia</option>
+              <option value="week">Semana</option>
+              <option value="month">Mes</option>
+              <option value="custom">Personalizado</option>
+            </select>
+          </label>
+          {period === "custom" ? (
+            <>
+              <label className="text-xs font-medium text-slate-600">
+                Fecha inicio
+                <input type="date" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-medium text-slate-600">
+                Fecha fin
+                <input type="date" value={customTo} onChange={(event) => setCustomTo(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+            </>
+          ) : (
+            <label className="text-xs font-medium text-slate-600">
+              Fecha de referencia
+              <input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
+            </label>
+          )}
+          <label className="text-xs font-medium text-slate-600">
+            UID
+            <input value={uid} onChange={(event) => setUid(event.target.value.toUpperCase())} placeholder="Todos" className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
+          </label>
+          <label className="text-xs font-medium text-slate-600">
+            Placa
+            <input value={plate} onChange={(event) => setPlate(event.target.value.toUpperCase())} placeholder="Todas" className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
+          </label>
+          <label className="text-xs font-medium text-slate-600">
+            Usuario
+            <input value={user} onChange={(event) => setUser(event.target.value)} placeholder="Todos" className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
+          </label>
+          <label className="text-xs font-medium text-slate-600">
+            Evento
+            <select value={eventType} onChange={(event) => setEventType(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm">
+              <option value="">Todos</option>
+              {eventTypes.map((type) => (
+                <option key={type} value={type}>
+                  {formatStatus(type, "event")}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button disabled={!events.length} onClick={exportCsv} className="self-end rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:bg-slate-300">
             Exportar CSV
           </button>
         </div>
+        {range ? <p className="mt-3 text-xs text-slate-500">Rango aplicado: {range.startDate} a {range.endDateInclusive}, zona horaria America/Lima.</p> : null}
+        {message ? <p className="mt-3 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-700">{message}</p> : null}
       </Card>
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        {summaryCards.map(([label, value]) => (
+          <Card key={label.toString()}>
+            <p className="text-sm font-medium text-slate-500">{label}</p>
+            <p className="mt-3 text-2xl font-semibold text-slate-950">{value}</p>
+          </Card>
+        ))}
+      </div>
 
       <div className="grid gap-4 xl:grid-cols-[1fr_0.8fr]">
         <Card>
           <h3 className="text-sm font-semibold text-slate-800">Horarios pico</h3>
-          <p className="mt-1 text-xs text-slate-500">Mayor flujo: {peak.label} con {peak.count} ingresos.</p>
-          <div className="mt-4 grid grid-cols-12 gap-2">
-            {peakRows.map((row) => (
-              <div key={row.hour} className="flex h-28 flex-col justify-end gap-1">
-                <div className="rounded-t bg-teal-600" style={{ height: `${Math.max(4, (row.count / maxPeak) * 100)}%` }} />
-                <span className="text-center text-[10px] text-slate-500">{String(row.hour).padStart(2, "0")}</span>
+          {events.length ? (
+            <>
+              <p className="mt-1 text-xs text-slate-500">Mayor flujo: {peak.count ? `${peak.label} con ${peak.count} ingresos` : "sin ingresos en el periodo"}.</p>
+              <div className="mt-4 grid grid-cols-12 gap-2">
+                {peakRows.map((row) => (
+                  <div key={row.hour} className="flex h-28 flex-col justify-end gap-1">
+                    <div className="rounded-t bg-teal-600" style={{ height: `${row.count ? Math.max(4, (row.count / maxPeak) * 100) : 0}%` }} />
+                    <span className="text-center text-[10px] text-slate-500">{String(row.hour).padStart(2, "0")}</span>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </>
+          ) : (
+            <EmptyState text="No hay eventos registrados para este periodo." />
+          )}
         </Card>
 
         <Card>
@@ -846,7 +948,7 @@ export function ReportsClient() {
             Buscar placa filtrada
           </button>
           <div className="mt-4 space-y-3 text-sm">
-            {plateReport.sessions.slice(0, 3).map((session) => (
+            {visiblePlateReport.sessions.slice(0, 3).map((session) => (
               <div key={session.id} className="rounded-md border border-slate-100 p-3">
                 <p className="font-semibold">
                   {session.plate ?? "Sin placa"} - {session.owner_name ?? "No asignado"}
@@ -860,15 +962,16 @@ export function ReportsClient() {
                 <Badge tone={statusTone(session.status)}>{formatStatus(session.status, "session")}</Badge>
               </div>
             ))}
-            {!plateReport.sessions.length ? <p className="text-slate-500">Filtra una placa y presiona buscar.</p> : null}
+            {visiblePlateReport.events.length ? <p className="text-slate-600">Eventos de la placa en el periodo: {visiblePlateReport.events.length}</p> : null}
+            {!visiblePlateReport.sessions.length ? <p className="text-slate-500">Filtra una placa y presiona buscar. El resultado usara el periodo actual.</p> : null}
           </div>
         </Card>
       </div>
 
       <Card>
-        {!events.length ? <EmptyState text="No hay eventos registrados para los filtros seleccionados." /> : null}
-        <div className="overflow-x-auto">
-          <table className={`min-w-full divide-y divide-slate-200 text-sm ${events.length ? "" : "mt-4"}`}>
+        {!events.length ? <EmptyState text="No hay eventos registrados para este periodo." /> : (
+          <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-slate-200 text-sm">
             <thead>
               <tr className="text-left text-slate-500">
                 <th className="py-3 pr-4 font-semibold">UID</th>
@@ -896,7 +999,8 @@ export function ReportsClient() {
               ))}
             </tbody>
           </table>
-        </div>
+          </div>
+        )}
       </Card>
     </div>
   );
@@ -1080,13 +1184,15 @@ export function SimulatorClient() {
     setLoading(label);
     setHttpStatus(null);
     try {
+      const isEntry = path.endsWith("/entry");
+      const isPayment = path.endsWith("/payment-confirm");
       const res = await fetch(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          deviceId: path.includes("entry") ? "ESP32_ENTRADA_01" : "ESP32_CASETA_01",
+          deviceId: isEntry ? "ESP32_ENTRADA_01" : isPayment ? "ESP32_PAGO_01" : "ESP32_SALIDA_01",
           uid,
-          point: path.includes("entry") ? "entrada" : path.includes("payment") ? "caseta" : "salida",
+          point: isEntry ? "entrada" : isPayment ? "pago" : "salida",
         }),
       });
       const rawText = await res.text();
@@ -1134,15 +1240,15 @@ export function SimulatorClient() {
           <button onClick={() => simulate("/api/iot/entry", "ingreso")} className="rounded-md bg-emerald-700 px-3 py-2 text-sm font-semibold text-white">
             Simular ingreso
           </button>
-          <button onClick={() => simulate("/api/iot/payment-request", "pago")} className="rounded-md bg-sky-700 px-3 py-2 text-sm font-semibold text-white">
-            Solicitar pago
+          <button onClick={() => simulate("/api/iot/payment-confirm", "pago")} className="rounded-md bg-sky-700 px-3 py-2 text-sm font-semibold text-white">
+            Simular pago
           </button>
           <button onClick={() => simulate("/api/iot/exit", "salida")} className="rounded-md bg-amber-700 px-3 py-2 text-sm font-semibold text-white">
             Simular salida
           </button>
         </div>
         <div className="mt-5 rounded-md border border-slate-200 p-3 text-sm text-slate-600">
-          <p>Flujos sugeridos: ingreso nuevo, ingreso duplicado, solicitar pago, salida sin pago, confirmar pago en Vehiculos dentro y salida final.</p>
+          <p>Flujo principal: ingreso, pago por caseta RFID y salida. Tambien puedes probar una salida directa para validar el rechazo por pago pendiente.</p>
         </div>
         {loading ? <p className="mt-4 text-sm text-slate-500">Procesando {loading}...</p> : null}
       </Card>

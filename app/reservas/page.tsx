@@ -6,7 +6,7 @@ export default function ReservationsPage() {
     <>
       <PageHeader
         title="Reservas"
-        description="Creacion manual, limite de 5 reservas activas, cancelacion y vencimiento para pruebas de la futura app movil."
+        description="Creacion manual, limite de 4 reservas activas, cancelacion y vencimiento para pruebas de la futura app movil."
       />
       <ReservationsClient />
     </>

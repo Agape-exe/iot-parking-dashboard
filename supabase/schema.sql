@@ -16,7 +16,7 @@ alter table public.app_users add column if not exists is_demo boolean not null d
 
 create table if not exists public.parking_spaces (
   id uuid primary key default gen_random_uuid(),
-  number integer not null unique check (number between 1 and 10),
+  number integer not null unique check (number between 1 and 9),
   status text not null default 'FREE',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -197,7 +197,7 @@ create unique index if not exists idx_one_uid_per_vehicle
 
 insert into public.parking_spaces (number, status)
 select number, 'FREE'
-from generate_series(1, 10) as number
+from generate_series(1, 9) as number
 on conflict (number) do nothing;
 
 insert into public.system_settings (id)
@@ -259,6 +259,7 @@ begin
   into free_space
   from public.parking_spaces ps
   where ps.status = 'FREE'
+    and ps.number between 1 and 9
     and not exists (
       select 1
       from public.parking_sessions s
@@ -309,6 +310,25 @@ begin
   );
 end;
 $$;
+
+create or replace function public.enforce_operational_parking_space()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if new.space_number > 9
+    and (tg_op = 'INSERT' or new.space_number is distinct from old.space_number) then
+    raise exception 'El espacio % no esta operativo.', new.space_number;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists enforce_operational_parking_space on public.parking_sessions;
+create trigger enforce_operational_parking_space
+before insert or update of space_number on public.parking_sessions
+for each row execute function public.enforce_operational_parking_space();
 
 create or replace function public.complete_rfid_enrollment(
   _uid text,

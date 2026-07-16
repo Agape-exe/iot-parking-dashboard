@@ -31,6 +31,6 @@ export function requireIotDevice(request: Request) {
 
   return {
     ok: false as const,
-    response: Response.json({ allowed: false, message: "Dispositivo IoT no autorizado" }, { status: 401 }),
+    response: Response.json({ allowed: false, ok: false, paid: false, message: "Dispositivo IoT no autorizado" }, { status: 401 }),
   };
 }
